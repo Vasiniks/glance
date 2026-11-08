@@ -19,7 +19,7 @@ add_executable(glance WIN32
 )
 set_target_properties(glance PROPERTIES OUTPUT_NAME Glance)
 target_include_directories(glance PRIVATE src)
-target_link_libraries(glance PRIVATE user32 gdi32 shell32 shcore pdh)
+target_link_libraries(glance PRIVATE user32 gdi32 shell32 shcore pdh comctl32)
 
 option(GLANCE_TINY "Optimize for smallest binary" OFF)
 
