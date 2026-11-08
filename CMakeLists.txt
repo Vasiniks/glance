@@ -47,10 +47,7 @@ if(MSVC)
   endif()
 endif()
 
-# Resource with icon (optional — no error if missing)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/glance.rc")
-  target_sources(glance PRIVATE resources/glance.rc)
-endif()
+# Optional icon resource — add resources/glance.rc if you have an .ico
 
 enable_testing()
 add_executable(glance_tests tests/tests.cpp src/telemetry.cpp src/config.cpp)
