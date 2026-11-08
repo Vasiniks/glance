@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Glance installer for Windows. Run it from Git Bash, MSYS2 or WSL:
-#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/main/install.sh | bash -s -- --uninstall
 # Options:
 #   --uninstall    close Glance and remove it, including its sign-in entry
 #   --no-startup   install without starting Glance when you sign in
@@ -84,7 +84,7 @@ main() {
 
   say "Glance is running. Installed to $(win "$exe")"
   if [ "$startup" = 1 ]; then say "It starts when you sign in (toggle that in its right-click menu)."; fi
-  say "Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/master/install.sh | bash -s -- --uninstall"
+  say "Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall"
 }
 
 # Close a running bar politely so Windows gives its screen edge back, then make sure it is gone.
