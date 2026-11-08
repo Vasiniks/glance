@@ -2,7 +2,9 @@
 
 A tiny system-monitor bar for Windows: CPU, memory, GPU, disks and network, docked to an edge of your screen and drawn as live history graphs.
 
-![Glance on the top edge of a 1920 px display](docs/glance.png)
+![Glance docked to the top of a 1920 px display](docs/glance.png)
+
+![Close-up of the CPU, memory and GPU widgets](docs/glance-zoom.png)
 
 - **One 50 KB exe.** No runtime to install, no background service, no installer framework.
 - **About 2 ms of CPU per second and 6 MB of memory** at the default refresh ([measured below](#how-light-is-it)).
