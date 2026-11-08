@@ -1,0 +1,9 @@
+out/
+build/
+*.exe
+*.pdb
+*.ilk
+*.obj
+.vs/
+cmake-build-*/
+compile_commands.json
