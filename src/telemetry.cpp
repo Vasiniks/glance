@@ -1,9 +1,4 @@
 #include "telemetry.h"
-#include <pdh.h>
-#include <windows.h>
-#include <psapi.h>
-#include <vector>
-#include <string>
 #include <algorithm>
 #include <cmath>
 
@@ -11,169 +6,118 @@
 
 namespace glance {
 
-std::string format_bytes(double bps) {
-    const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s"};
-    double v = bps;
-    int u = 0;
-    while (v >= 1024.0 && u < 3) { v /= 1024.0; ++u; }
-    char buf[64];
-    if (v < 10) snprintf(buf, sizeof(buf), "%.1f %s", v, units[u]);
-    else snprintf(buf, sizeof(buf), "%.0f %s", v, units[u]);
-    return std::string(buf);
-}
-std::string format_percent(double v) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.0f%%", v);
-    return std::string(buf);
+static inline double ctr_val(PDH_HCOUNTER c) noexcept {
+    PDH_FMT_COUNTERVALUE v{};
+    if (PdhGetFormattedCounterValue(c, PDH_FMT_DOUBLE, nullptr, &v) != ERROR_SUCCESS) return 0;
+    if (v.CStatus != ERROR_SUCCESS && v.CStatus != PDH_CSTATUS_VALID_DATA && v.CStatus != PDH_CSTATUS_NEW_DATA) return 0;
+    double d = v.doubleValue;
+    if (!std::isfinite(d)) return 0;
+    return d;
 }
 
-static std::vector<std::wstring> pdh_expand(const wchar_t* wildcard) {
-    DWORD bufSize = 0;
-    DWORD itemSize = 0;
-    PDH_STATUS st = PdhExpandCounterPathW(wildcard, nullptr, &bufSize);
+static std::vector<std::wstring> expand(const wchar_t* wild) {
+    DWORD bufSz = 0;
+    PDH_STATUS st = PdhExpandCounterPathW(wild, nullptr, &bufSz);
     if (st != PDH_MORE_DATA) return {};
-    std::vector<wchar_t> buf(bufSize);
-    std::vector<wchar_t> items(1);
-    itemSize = 0;
-    st = PdhExpandCounterPathW(wildcard, buf.data(), &bufSize);
+    std::vector<wchar_t> buf(bufSz);
+    st = PdhExpandCounterPathW(wild, buf.data(), &bufSz);
     if (st != ERROR_SUCCESS) return {};
-    // buf is list of \0-separated strings, double \0 terminated
     std::vector<std::wstring> out;
+    out.reserve(16);
     wchar_t* p = buf.data();
-    while (*p) {
-        out.emplace_back(p);
-        p += wcslen(p) + 1;
-    }
+    while (*p) { out.emplace_back(p); p += wcslen(p) + 1; }
     return out;
+}
+
+static void extract_instance(const std::wstring& path, wchar_t* out, size_t cap) {
+    size_t a = path.find(L'(');
+    size_t b = path.find(L')', a + 1);
+    if (a == std::wstring::npos || b == std::wstring::npos) { out[0] = 0; return; }
+    std::wstring ins = path.substr(a + 1, b - a - 1);
+    wcsncpy_s(out, cap, ins.c_str(), _TRUNCATE);
 }
 
 bool Collector::init_pdh() {
     if (PdhOpenQueryW(nullptr, 0, &query_) != ERROR_SUCCESS) return false;
 
-    // CPU per core
-    auto cpu_paths = pdh_expand(L"\\Processor(*)\\% Processor Time");
-    for (auto& path : cpu_paths) {
-        if (path.find(L"_Total") != std::wstring::npos) {
+    auto cpu_paths = expand(L"\\Processor(*)\\% Processor Time");
+    cpu_ctrs_.reserve(cpu_paths.size());
+    for (auto& p : cpu_paths) {
+        if (p.find(L"_Total") != std::wstring::npos) {
             PDH_HCOUNTER c;
-            if (PdhAddCounterW(query_, path.c_str(), 0, &c) == ERROR_SUCCESS)
-                total_cpu_ = c;
+            if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) total_cpu_ = c;
             continue;
         }
-        // skip if not numeric index, but keep all
-        if (path.find(L"\\Processor(") == std::wstring::npos) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, path.c_str(), 0, &c) == ERROR_SUCCESS)
-            cpu_counters_.push_back(c);
+        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) cpu_ctrs_.push_back(c);
     }
 
-    // Disk
-    auto disk_active_paths = pdh_expand(L"\\PhysicalDisk(*)\\% Disk Time");
-    auto disk_read_paths = pdh_expand(L"\\PhysicalDisk(*)\\Disk Read Bytes/sec");
-    auto disk_write_paths = pdh_expand(L"\\PhysicalDisk(*)\\Disk Write Bytes/sec");
+    auto d_act = expand(L"\\PhysicalDisk(*)\\% Disk Time");
+    auto d_rd  = expand(L"\\PhysicalDisk(*)\\Disk Read Bytes/sec");
+    auto d_wr  = expand(L"\\PhysicalDisk(*)\\Disk Write Bytes/sec");
 
-    // map by index parsing: simple by order matching _Total excluded
-    auto add_filtered = [](const std::vector<std::wstring>& paths, std::vector<std::wstring>& names) {
-        std::vector<std::wstring> out;
-        for (auto& p : paths) {
-            if (p.find(L"_Total") != std::wstring::npos) continue;
-            // extract instance between ( )
-            auto a = p.find(L'(');
-            auto b = p.find(L')', a);
-            if (a != std::wstring::npos && b != std::wstring::npos)
-                out.push_back(p.substr(a + 1, b - a - 1));
-            else
-                out.push_back(p);
-        }
-        return out;
-    };
-
-    // Build unique disk names
-    std::vector<std::wstring> instances = add_filtered(disk_active_paths, disk_names_);
-    // dedup names
-    std::sort(instances.begin(), instances.end());
-    instances.erase(std::unique(instances.begin(), instances.end()), instances.end());
-
-    for (auto& p : disk_active_paths) {
-        if (p.find(L"_Total") != std::wstring::npos) continue;
+    d_count_ = 0;
+    for (size_t i = 0; i < d_act.size() && d_count_ < 16; ++i) {
+        if (d_act[i].find(L"_Total") != std::wstring::npos) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) disk_active_.push_back(c);
+        if (PdhAddCounterW(query_, d_act[i].c_str(), 0, &c) != ERROR_SUCCESS) continue;
+        d_active_.push_back(c);
+        extract_instance(d_act[i], d_names_[d_count_], 32);
+        ++d_count_;
     }
-    for (auto& p : disk_read_paths) {
-        if (p.find(L"_Total") != std::wstring::npos) continue;
+    // read/write align to same count (best effort)
+    d_count_ = std::min(d_count_, (size_t)16);
+    for (size_t i = 0, added = 0; i < d_rd.size() && added < d_count_; ++i) {
+        if (d_rd[i].find(L"_Total") != std::wstring::npos) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) disk_read_.push_back(c);
+        if (PdhAddCounterW(query_, d_rd[i].c_str(), 0, &c) == ERROR_SUCCESS) { d_read_.push_back(c); ++added; }
     }
-    for (auto& p : disk_write_paths) {
-        if (p.find(L"_Total") != std::wstring::npos) continue;
+    for (size_t i = 0, added = 0; i < d_wr.size() && added < d_count_; ++i) {
+        if (d_wr[i].find(L"_Total") != std::wstring::npos) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) disk_write_.push_back(c);
+        if (PdhAddCounterW(query_, d_wr[i].c_str(), 0, &c) == ERROR_SUCCESS) { d_write_.push_back(c); ++added; }
     }
-    // names aligned to counters (best effort)
-    disk_names_ = instances;
-    // pad if mismatch
-    while (disk_names_.size() < disk_active_.size()) disk_names_.push_back(L"disk");
+    d_count_ = std::min({d_count_, d_active_.size(), d_read_.size(), d_write_.size()});
 
-    // Network
-    auto net_rx_paths = pdh_expand(L"\\Network Interface(*)\\Bytes Received/sec");
-    auto net_tx_paths = pdh_expand(L"\\Network Interface(*)\\Bytes Sent/sec");
-    std::vector<std::wstring> net_instances;
-    for (auto& p : net_rx_paths) {
-        auto a = p.find(L'(');
-        auto b = p.find(L')', a);
-        if (a != std::wstring::npos && b != std::wstring::npos)
-            net_instances.push_back(p.substr(a + 1, b - a - 1));
-    }
-    std::sort(net_instances.begin(), net_instances.end());
-    net_instances.erase(std::unique(net_instances.begin(), net_instances.end()), net_instances.end());
-
-    for (auto& p : net_rx_paths) {
+    auto n_rx = expand(L"\\Network Interface(*)\\Bytes Received/sec");
+    auto n_tx = expand(L"\\Network Interface(*)\\Bytes Sent/sec");
+    n_count_ = 0;
+    for (size_t i = 0; i < n_rx.size() && n_count_ < 32; ++i) {
+        if (n_rx[i].find(L"_Total") != std::wstring::npos && n_rx.size() > 1) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) net_rx_.push_back(c);
+        if (PdhAddCounterW(query_, n_rx[i].c_str(), 0, &c) != ERROR_SUCCESS) continue;
+        n_rx_.push_back(c);
+        extract_instance(n_rx[i], n_names_[n_count_], 64);
+        ++n_count_;
     }
-    for (auto& p : net_tx_paths) {
+    for (size_t i = 0, added = 0; i < n_tx.size() && added < n_count_; ++i) {
+        if (n_tx[i].find(L"_Total") != std::wstring::npos && n_tx.size() > 1) continue;
         PDH_HCOUNTER c;
-        if (PdhAddCounterW(query_, p.c_str(), 0, &c) == ERROR_SUCCESS) net_tx_.push_back(c);
+        if (PdhAddCounterW(query_, n_tx[i].c_str(), 0, &c) == ERROR_SUCCESS) { n_tx_.push_back(c); ++added; }
     }
-    net_names_ = net_instances;
-    while (net_names_.size() < net_rx_.size()) net_names_.push_back(L"net");
+    n_count_ = std::min({n_count_, n_rx_.size(), n_tx_.size()});
 
-    // pick chosen net
+    // pick net
+    chosen_net_ = 0;
     {
         std::lock_guard<std::mutex> g(iface_mu_);
-        if (!net_iface_hint_.empty()) {
-            for (size_t i = 0; i < net_names_.size(); ++i) {
-                if (net_names_[i].find(net_iface_hint_) != std::wstring::npos) { chosen_net_ = i; break; }
-            }
+        if (!net_hint_.empty()) {
+            for (size_t i = 0; i < n_count_; ++i)
+                if (wcsstr(n_names_[i], net_hint_.c_str())) { chosen_net_ = i; break; }
         }
     }
 
-    // prime first sample
     PdhCollectQueryData(query_);
-    first_sample_ = true;
+    first_ = true;
     return true;
 }
 
-void Collector::close_pdh() {
-    if (query_) {
-        PdhCloseQuery(query_);
-        query_ = nullptr;
-    }
-    cpu_counters_.clear();
-    disk_active_.clear();
-    disk_read_.clear();
-    disk_write_.clear();
-    net_rx_.clear();
-    net_tx_.clear();
-    disk_names_.clear();
-    net_names_.clear();
+void Collector::close_pdh() noexcept {
+    if (query_) { PdhCloseQuery(query_); query_ = nullptr; }
+    cpu_ctrs_.clear(); d_active_.clear(); d_read_.clear(); d_write_.clear();
+    n_rx_.clear(); n_tx_.clear();
     total_cpu_ = nullptr;
-}
-
-static double counter_val(PDH_HCOUNTER c) {
-    PDH_FMT_COUNTERVALUE v;
-    if (PdhGetFormattedCounterValue(c, PDH_FMT_DOUBLE, nullptr, &v) != ERROR_SUCCESS) return 0;
-    if (v.CStatus != ERROR_SUCCESS && v.CStatus != PDH_CSTATUS_VALID_DATA && v.CStatus != PDH_CSTATUS_NEW_DATA) return 0;
-    return v.doubleValue;
+    d_count_ = 0; n_count_ = 0;
 }
 
 void Collector::run() {
@@ -182,88 +126,81 @@ void Collector::run() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         if (!running_.load()) break;
 
-        if (!query_ && !init_pdh()) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
+        if (!query_ && !init_pdh()) { std::this_thread::sleep_for(std::chrono::seconds(1)); continue; }
         PdhCollectQueryData(query_);
-
-        if (first_sample_) {
-            first_sample_ = false;
-            continue; // need two samples
-        }
+        if (first_) { first_ = false; continue; }
 
         Snapshot snap;
         snap.timestamp = Clock::now();
 
         // CPU
-        snap.cpu.per_core.reserve(cpu_counters_.size());
-        for (auto c : cpu_counters_) snap.cpu.per_core.push_back(std::clamp(counter_val(c), 0.0, 100.0));
-        if (total_cpu_) snap.cpu.total = std::clamp(counter_val(total_cpu_), 0.0, 100.0);
-        else if (!snap.cpu.per_core.empty()) {
-            double sum = 0; for (auto v : snap.cpu.per_core) sum += v;
-            snap.cpu.total = sum / snap.cpu.per_core.size();
+        snap.cpu.count = std::min(cpu_ctrs_.size(), (size_t)64);
+        for (size_t i = 0; i < snap.cpu.count; ++i) snap.cpu.per_core[i] = std::clamp(ctr_val(cpu_ctrs_[i]), 0.0, 100.0);
+        if (total_cpu_) snap.cpu.total = std::clamp(ctr_val(total_cpu_), 0.0, 100.0);
+        else if (snap.cpu.count) {
+            double s = 0; for (size_t i = 0; i < snap.cpu.count; ++i) s += snap.cpu.per_core[i];
+            snap.cpu.total = s / snap.cpu.count;
         }
 
-        // RAM
-        MEMORYSTATUSEX mem{};
-        mem.dwLength = sizeof(mem);
-        if (GlobalMemoryStatusEx(&mem)) {
+        // RAM — GlobalMemoryStatusEx lives in kernel32, no heap
+        MEMORYSTATUSEX mem{}; mem.dwLength = sizeof(mem);
+        if (GlobalMemoryStatusEx(&mem) && mem.ullTotalPhys) {
             snap.ram.total_bytes = mem.ullTotalPhys;
             snap.ram.used_bytes = mem.ullTotalPhys - mem.ullAvailPhys;
-            snap.ram.used_percent = snap.ram.total_bytes ? (100.0 * snap.ram.used_bytes / snap.ram.total_bytes) : 0;
+            snap.ram.used_percent = 100.0 * (double)snap.ram.used_bytes / (double)snap.ram.total_bytes;
         }
 
         // Disks
-        size_t dn = std::min({disk_active_.size(), disk_read_.size(), disk_write_.size(), disk_names_.size()});
-        for (size_t i = 0; i < dn; ++i) {
-            DiskSample ds;
-            ds.name = disk_names_[i];
-            ds.active = std::clamp(counter_val(disk_active_[i]), 0.0, 100.0);
-            ds.read_bps = std::max(0.0, counter_val(disk_read_[i]));
-            ds.write_bps = std::max(0.0, counter_val(disk_write_[i]));
-            snap.disks.push_back(std::move(ds));
+        snap.disk_count = std::min(d_count_, (size_t)16);
+        for (size_t i = 0; i < snap.disk_count; ++i) {
+            auto& ds = snap.disks[i];
+            wcsncpy_s(ds.name, d_names_[i], _TRUNCATE);
+            ds.active = std::clamp(ctr_val(d_active_[i]), 0.0, 100.0);
+            ds.read_bps = std::max(0.0, ctr_val(d_read_[i]));
+            ds.write_bps = std::max(0.0, ctr_val(d_write_[i]));
         }
 
-        // Net — choose most active if no hint
-        if (!net_rx_.empty() && !net_tx_.empty()) {
-            size_t best = chosen_net_;
-            double best_sum = -1;
-            for (size_t i = 0; i < std::min(net_rx_.size(), net_tx_.size()); ++i) {
-                double s = counter_val(net_rx_[i]) + counter_val(net_tx_[i]);
-                if (s > best_sum) { best_sum = s; best = i; }
+        // Net — pick most active, but respect hint
+        if (n_count_ > 0) {
+            size_t best = chosen_net_ < n_count_ ? chosen_net_ : 0;
+            double bestSum = -1;
+            for (size_t i = 0; i < n_count_; ++i) {
+                double s = ctr_val(n_rx_[i]) + ctr_val(n_tx_[i]);
+                if (s > bestSum) { bestSum = s; best = i; }
             }
-            // if hinted iface is still present, stay on it unless it is 0 and others are active
             {
                 std::lock_guard<std::mutex> g(iface_mu_);
-                if (!net_iface_hint_.empty() && chosen_net_ < net_names_.size()) best = chosen_net_;
+                if (!net_hint_.empty()) best = chosen_net_;
             }
             chosen_net_ = best;
-            snap.net.name = (chosen_net_ < net_names_.size()) ? net_names_[chosen_net_] : L"";
-            snap.net.rx_bps = counter_val(net_rx_[chosen_net_]);
-            snap.net.tx_bps = counter_val(net_tx_[chosen_net_]);
+            auto& ns = snap.net;
+            wcsncpy_s(ns.name, n_names_[best], _TRUNCATE);
+            ns.rx_bps = std::max(0.0, ctr_val(n_rx_[best]));
+            ns.tx_bps = std::max(0.0, ctr_val(n_tx_[best]));
         }
 
         snap.valid = true;
-        mailbox.publish(std::move(snap));
+        mailbox.publish(snap);
     }
 }
 
-bool Collector::start(const std::wstring& net_iface_hint) {
+bool Collector::start(const std::wstring& hint) {
     if (running_.exchange(true)) return false;
-    {
-        std::lock_guard<std::mutex> g(iface_mu_);
-        net_iface_hint_ = net_iface_hint;
-    }
+    { std::lock_guard<std::mutex> g(iface_mu_); net_hint_ = hint; }
     thread_ = std::jthread([this](std::stop_token){ run(); });
     return true;
 }
-
 void Collector::stop() {
     if (!running_.exchange(false)) return;
     if (thread_.joinable()) thread_.join();
     close_pdh();
+}
+void Collector::set_net_iface(std::wstring s) {
+    std::lock_guard<std::mutex> g(iface_mu_);
+    net_hint_ = std::move(s);
+    // if running, update chosen
+    for (size_t i = 0; i < n_count_; ++i)
+        if (wcsstr(n_names_[i], net_hint_.c_str())) { chosen_net_ = i; break; }
 }
 
 } // namespace glance

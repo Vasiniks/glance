@@ -7,11 +7,12 @@ namespace glance {
 
 class Renderer {
 public:
-    explicit Renderer() = default;
+    Renderer() = default;
+    ~Renderer() { cleanup(); }
 
     void paint(HDC hdc, RECT rc, const Snapshot& snap, const Config& cfg, bool vertical);
-    void set_dpi(UINT dpi) { dpi_ = dpi; }
-    UINT dpi() const { return dpi_; }
+    void set_dpi(UINT dpi) noexcept { dpi_ = dpi; }
+    void cleanup() noexcept; // free cached GDI
 
 private:
     void paint_horizontal(HDC hdc, RECT rc, const Snapshot& snap, const Config& cfg);

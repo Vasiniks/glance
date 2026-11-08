@@ -1,16 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
-project(Glance VERSION 1.0.0 LANGUAGES CXX RC)
+project(Glance VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Lightweight defaults — no SDK pin, no CMake pin.
 if(NOT WIN32)
   message(FATAL_ERROR "Glance is Windows-only")
 endif()
 
-# Single executable, no static libs for minimal link overhead.
+# Single exe — no static libs for minimal overhead
 add_executable(glance WIN32
   src/main.cpp
   src/telemetry.cpp
@@ -18,17 +17,10 @@ add_executable(glance WIN32
   src/appbar.cpp
   src/config.cpp
 )
-
 set_target_properties(glance PROPERTIES OUTPUT_NAME Glance)
-
 target_include_directories(glance PRIVATE src)
+target_link_libraries(glance PRIVATE user32 gdi32 shell32 shcore pdh)
 
-# Only what we actually use.
-target_link_libraries(glance PRIVATE
-  user32 gdi32 shell32 shcore pdh iphlpapi
-)
-
-# /O1 and size opts when GLANCE_TINY=ON
 option(GLANCE_TINY "Optimize for smallest binary" OFF)
 
 target_compile_definitions(glance PRIVATE
@@ -37,22 +29,35 @@ target_compile_definitions(glance PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(glance PRIVATE /W4 /permissive- /utf-8 /EHsc /GR-)
-  target_link_options(glance PRIVATE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /INCREMENTAL:NO /OPT:REF /OPT:ICF)
+  # Lightest: no RTTI, no EH exception tables where possible, /O1 /Os
+  target_compile_options(glance PRIVATE
+    /W4 /permissive- /utf-8
+    /EHsc /GR-                 # no RTTI
+    /Zc:inline /GF /Gy         # merge strings + func-level linking
+  )
+  target_link_options(glance PRIVATE
+    /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA
+    /INCREMENTAL:NO
+    /OPT:REF /OPT:ICF
+    /SUBSYSTEM:WINDOWS
+  )
   if(GLANCE_TINY)
     target_compile_options(glance PRIVATE /O1 /Os /GL)
     target_link_options(glance PRIVATE /LTCG /DEBUG:NONE)
+    # Further size wins (optional, not default because VS version dependent):
+    # /MERGE:.rdata=.text would pack but leave wx protection — leave out by default
   else()
-    target_compile_options(glance PRIVATE $<$<CONFIG:Release>:/O2>)
+    target_compile_options(glance PRIVATE /O2)
+    target_link_options(glance PRIVATE $<$<CONFIG:Release>:/DEBUG:FULL>)
   endif()
 endif()
 
-# Optional icon resource — add resources/glance.rc if you have an .ico
+# Tests — also lightweight, no iostream
+add_executable(glance_tests tests/tests.cpp src/config.cpp)
+target_include_directories(glance_tests PRIVATE src)
+target_link_libraries(glance_tests PRIVATE user32 shell32 shcore)
+set_target_properties(glance_tests PROPERTIES OUTPUT_NAME glance_tests)
 
 enable_testing()
-add_executable(glance_tests tests/tests.cpp src/telemetry.cpp src/config.cpp)
-target_include_directories(glance_tests PRIVATE src)
-target_link_libraries(glance_tests PRIVATE pdh iphlpapi user32 gdi32 shcore shell32)
-set_target_properties(glance_tests PROPERTIES OUTPUT_NAME glance_tests)
 add_test(NAME unit COMMAND glance_tests)
-set_tests_properties(unit PROPERTIES TIMEOUT 30)
+set_tests_properties(unit PROPERTIES TIMEOUT 10)

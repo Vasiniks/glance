@@ -67,17 +67,14 @@ void AppBar::reposition() {
     RECT work = mi.rcWork;
     RECT full = mi.rcMonitor;
 
-    int thickness_px = cfg_.thickness;
-    // scale by DPI of monitor
+    static auto getDpi = []() -> UINT(WINAPI*)(HWND) {
+        HMODULE u32 = GetModuleHandleW(L"user32.dll");
+        if (!u32) return nullptr;
+        return reinterpret_cast<UINT(WINAPI*)(HWND)>(GetProcAddress(u32, "GetDpiForWindow"));
+    }();
     UINT dpi = 96;
-    // Try GetDpiForWindow if available
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    if (user32) {
-        using Fn = UINT(WINAPI*)(HWND);
-        auto f = reinterpret_cast<Fn>(GetProcAddress(user32, "GetDpiForWindow"));
-        if (f) dpi = f(hwnd_);
-    }
-    thickness_px = MulDiv(cfg_.thickness, (int)dpi, 96);
+    if (getDpi) { UINT d = getDpi(hwnd_); if (d) dpi = d; }
+    int thickness_px = MulDiv(cfg_.thickness, (int)dpi, 96);
 
     Edge edge = cfg_.edge;
     if (edge == Edge::Auto) edge = Edge::Bottom; // simple default
