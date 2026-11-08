@@ -1,9 +1,8 @@
-out/
 build/
+build-*/
+out/
 *.exe
-*.pdb
-*.ilk
-*.obj
+*.o
+*.res
+glance.ini
 .vs/
-cmake-build-*/
-compile_commands.json

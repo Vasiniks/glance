@@ -1,119 +1,107 @@
 # Glance
 
-**Ultra-lightweight desktop system monitor for Windows — <90KB, 0 deps, ~5MB RAM, premium UI.**
+A tiny system-monitor bar for Windows: CPU, memory, GPU, disks and network, docked to an edge of your screen and drawn as live history graphs.
 
-Glance shows per-core CPU, RAM, disk, and network in a native Windows AppBar. Place it on any screen edge; maximized windows sit beside it. Rounded tiles, subtle highlights, tracking tooltips.
+![Glance on the top edge of a 1920 px display](docs/glance.png)
 
-![glance](https://img.shields.io/badge/size-%3C90KB-blue) ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey) ![lang](https://img.shields.io/badge/lang-C%2B%2B20-blue) ![deps](https://img.shields.io/badge/deps-0-green) ![ram](https://img.shields.io/badge/RAM-%7E5MB-green) ![ui](https://img.shields.io/badge/UI-premium%20GDI-purple)
+- **One 50 KB exe.** No runtime to install, no background service, no installer framework.
+- **About 2 ms of CPU per second and 6 MB of memory** at the default refresh ([measured below](#how-light-is-it)).
+- Docks like the taskbar: maximized windows sit beside it, fullscreen games cover it.
 
-## Install / Uninstall (one-liner)
+## Install
 
-> Windows 10/11 x64 — Git Bash or PowerShell.
-
-**`.sh` one-liner (recommended — works in Git Bash, MSYS2, WSL):**
+Run this in **Git Bash** (comes with [Git for Windows](https://git-scm.com/download/win)), MSYS2 or WSL:
 
 ```bash
-# curl | bash — builds tiny, installs to %LOCALAPPDATA%\Glance, autostart, runs
-curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/main/install.sh | bash
-
-# local clone:
-bash install.sh                  # build + install
-bash install.sh --portable       # no autostart shortcut
-bash install.sh --bin-url=https://example.com/Glance.exe  # from URL
-
-# uninstall
-bash uninstall.sh
+curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash
 ```
 
-**PowerShell one-liners (alternative):**
+Uninstall:
 
-```powershell
-# build + install (autostart)
-cmake -B build -DGLANCE_TINY=ON; cmake --build build --config Release; powershell -ExecutionPolicy Bypass -File scripts/install.ps1
-
-# uninstall
-powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
-
-# portable
-.\build\Release\Glance.exe
-
-# remote PS install
-iwr https://raw.githubusercontent.com/Vasiniks/glance/main/scripts/install.ps1 -UseBasicParsing | iex
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash -s -- --uninstall
 ```
 
-Portable mode: if `glance.ini` sits next to exe, it stays portable. No registry.
+The installer downloads the latest release to `%LOCALAPPDATA%\Programs\Glance`, starts it, and has it start when you sign in (`--no-startup` skips that). It needs no admin rights and touches nothing else. Or download `Glance.exe` from [Releases](https://github.com/Vasiniks/glance/releases) and just run it.
 
-## UI — premium GDI, still tiny
+Windows 10 or 11, 64-bit.
 
-- **Background** `#0F0F12` with 1px border `#2A2A32` edge glow
-- **Pill labels** `#24242A` bg / `#B0B2BE` text / symbols ✦ ◍ ◫ ⇆
-- **CPU**: rounded tiles (r=4px, gap 3px), emerald→amber→rose heatmap, cached GDI, double-pass clean fill
-- **RAM**: rounded track `#26262C`, fill with adaptive color + top shine highlight (lerp to white 22%)
-- **Disk**: 3–4 slim rows, name + rounded 5px bar `#2D2D34` → heat color
-- **Net**: segmented track — ▼ blue `#60A5FA` / ▲ amber `#FBBF24` plus formatted B/KB/MB, tooltip with iface name
-- **Separators** 1px `#26262E` between sections
-- **Tooltip** tracking tooltip (`TOOLTIPS_CLASS` + `TTM_TRACK`) on hover — shows exact values
-- **Double-buffered** `BitBlt` to avoid flicker, `Thread_local` cached `HFONT` + `HBRUSH` + `HPEN` = 1 GDI alloc vs N per frame
+## What it shows
 
-## Why so lightweight?
+| Widget | Graph | Numbers |
+| --- | --- | --- |
+| CPU | One tile per logical processor, brighter when busier. Hybrid CPUs show performance cores above efficiency cores. | Total load |
+| Memory | Used | Used %, used / total GB |
+| GPU | Load, memory, video decode | Load %, memory used, ▶ decode % |
+| Disk (each drive) | Active time, read, write | Active %, R / W per second |
+| Network | Download, upload | ↓ / ↑ per second |
 
-| Feature | Typical | Glance |
-|---|---|---|
-| Renderer | D2D/DWrite + fonts | **GDI only, cached, rounded, 0 per-frame allocs** |
-| Telemetry | WMI+DXGI+vendor SDKs | **PDH only, fixed arrays 64c/16d/32n** |
-| Config | Registry/JSON | **Win32 INI API (kernel32)** |
-| Deps | 4 libs + 3 SDKs | **1 exe, user32+gdi32+shell32+shcore+pdh+comctl32** |
-| Source | ~35 files | **~6 files ~950 LOC** |
-| Binary | 1–2 MB | **<90KB `/O1 /Os /GL /GR- /GF /Gy /LTCG`** |
-| Build | Pinned | **any MSVC + any Win10 SDK** |
+Disk and network rates are scaled to the fastest rate seen since Glance started. Hover a widget for exact figures; left-click opens Task Manager.
+
+## Settings
+
+Right-click the bar or its tray icon:
+
+- **Show**: memory, GPU, disks, network. Hidden widgets are no longer measured either.
+- **CPU colors**: Teal, Ice, Blue, Violet, Amber, Traffic light, Heat.
+- **Refresh**: how often readings are taken, from 10 times a second to every 2 seconds.
+- **Graph speed**: how fast the graphs scroll, from 0.1 s to 1 minute per step. Each step averages the readings taken during it, so a fast refresh with a slow graph gives live numbers over hours of history (at 1 minute per step, a 300 px wide graph covers about 2½ hours).
+- **History graphs** (off gives plain bars) and **Numbers**.
+- **Edge**, **Size**, **Display**, **Start with Windows**.
+
+Everything lives in `glance.ini` next to `Glance.exe`. **Edit settings…** opens it and **Reload settings** applies your edits:
+
+```ini
+[glance]
+edge=top            ; top, bottom, left, right
+size=40             ; bar thickness in DIPs, 24-200
+interval=1000       ; refresh in milliseconds, 100-5000
+graph_step=1000     ; milliseconds per graph step (scroll speed), 100-60000
+display=0           ; 0 = primary, 1..n = a specific display
+graphs=1            ; 0 = plain bars
+readouts=1          ; numbers beside each graph
+ram=1
+gpu=1
+disks=1
+network=1
+taskmgr=1           ; left-click opens Task Manager
+cpu_colors=teal     ; a preset, or 2-5 colors from idle to busy, e.g. #1b2433,#7aa2f7,#ff6b9a
+adapter=            ; show the network adapter whose name contains this (default: the busiest)
+gpu_adapter=        ; show the GPU whose name contains this (default: the one with the most video memory)
+```
+
+## How light is it?
+
+Measured with the release build on Windows 11 (16 logical processors, RTX 5070, one SSD), every widget on, 60 seconds per row after a warm-up. CPU is the process's CPU time per second; memory is Task Manager's Memory column (private working set).
+
+| Refresh | CPU time | Task Manager CPU | Memory |
+| --- | --- | --- | --- |
+| Every second (default) | 1.8 ms/s | about 0.01 % | 6.0 MB |
+| 10 times a second | 18–19 ms/s | about 0.1 % | 5.8–6.0 MB |
+
+- Nearly all of the cost is taking readings, so it grows with the refresh rate. Graph speed and drawing barely register: 10 times a second with plain bars measured the same.
+- The GPU widget is the priciest reading. Windows reports GPU load per process per engine (549 counters on this machine). Turning it off under **Show** drops those counters; at 1 reading a second that took CPU time from 3.5 to 1.0 ms/s in an earlier run.
+- Nothing grows while it runs: a two-minute run at 10 readings a second held at 244 handles, 14 GDI objects and 6 MB.
+
+It stays small by being one C++ file on Windows' own APIs: GDI to draw, PDH performance counters to read, and a one-off DXGI lookup to find the GPU. There are no threads, no C++ runtime and no third-party code, and history lives in fixed-size buffers.
 
 ## Build
 
-```
-cmake -B build -DGLANCE_TINY=ON
-cmake --build build --config Release
-.\build\Release\Glance.exe
-ctest --test-dir build
-```
+With [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) or MSYS2's mingw-w64 on your `PATH`:
 
-## Usage
-
-- Run `Glance.exe` — tray icon appears.
-- Hover sections → tooltip with details. Left-click → Task Manager. Right-click → menu.
-- `glance.ini`:
-
-```ini
-[Glance]
-edge=bottom      # auto/left/top/right/bottom
-thickness=56     # 40..640 DIPs (56 looks best for new UI)
-interval=1000    # 250..5000 ms
-monitor=0        # 0=primary
-show_cpu=1
-show_ram=1
-show_disks=1
-show_net=1
-always_numbers=1
-open_taskmgr=1
+```bash
+./build.sh          # writes build/Glance.exe
 ```
 
-## Architecture
+With Visual Studio:
 
-```
-src/
-  main.cpp        — WinMain, DPI fast path, tooltip tracking, single instance
-  config.h/.cpp   — INI via kernel32, portable-first
-  telemetry.h/.cpp— PDH single query, stack buffers, mailbox
-  renderer.h/.cpp — premium GDI: rounded tiles, pills, shine, hit-test
-  appbar.h/.cpp   — AppBar + tray
-install.sh        — bash installer (curl|bash friendly)
-uninstall.sh      — bash uninstaller
-scripts/
-  install.ps1     — PS installer (Windows)
-  uninstall.ps1   — PS uninstaller
+```powershell
+cmake -B build-msvc
+cmake --build build-msvc --config Release
 ```
 
-See `OPTIMIZATIONS.md` for size breakdown.
+Pushing a `v*` tag makes GitHub Actions build `Glance.exe` and attach it to a release.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

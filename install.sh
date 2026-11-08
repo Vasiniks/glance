@@ -1,117 +1,113 @@
 #!/usr/bin/env bash
-# Glance — one-liner installer for Windows (Git Bash / MSYS2 / WSL)
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/main/install.sh | bash
-#   bash install.sh --portable
-#   bash install.sh --no-startup --bin-url https://example.com/Glance.exe
+# Glance installer for Windows. Run it from Git Bash, MSYS2 or WSL:
+#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Vasiniks/glance/master/install.sh | bash -s -- --uninstall
+# Options:
+#   --uninstall    close Glance and remove it, including its sign-in entry
+#   --no-startup   install without starting Glance when you sign in
+#   --exe PATH     install a local Glance.exe instead of downloading the latest release
 set -euo pipefail
 
-INSTALL_DIR="${LOCALAPPDATA:-$HOME/AppData/Local}/Glance"
-BIN_URL=""
-NO_STARTUP=0
-PORTABLE=0
 REPO="Vasiniks/glance"
+URL="https://github.com/$REPO/releases/latest/download/Glance.exe"
+RUNKEY='HKCU\Software\Microsoft\Windows\CurrentVersion\Run'
 
-info() { printf "\033[1;36m[glance]\033[0m %s\n" "$*"; }
-warn() { printf "\033[1;33m[warn]\033[0m %s\n" "$*"; }
-err()  { printf "\033[1;31m[err]\033[0m %s\n" "$*" >&2; }
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# Run a Windows tool with its /switches left alone by MSYS path conversion and stdin detached
+# (so nothing can swallow the rest of a piped script).
+wincmd() { MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 "$@" </dev/null; }
+winenv() { (cd /mnt/c 2>/dev/null; cmd.exe /d /c "echo %$1%" </dev/null 2>/dev/null) | tr -d '\r'; }
 
-for arg in "$@"; do
-  case "$arg" in
-    --portable) PORTABLE=1 ;;
-    --no-startup) NO_STARTUP=1 ;;
-    --bin-url=*) BIN_URL="${arg#*=}" ;;
-    --dir=*) INSTALL_DIR="${arg#*=}" ;;
-    --help|-h) echo "Usage: $0 [--portable] [--no-startup] [--dir=PATH] [--bin-url=URL]"; exit 0 ;;
-  esac
-done
-
-# Resolve exe source
-SRC=""
-if [[ -n "$BIN_URL" ]]; then
-  TMP="/tmp/Glance.exe"
-  info "Downloading $BIN_URL → $TMP"
-  if command -v curl >/dev/null; then curl -fsSL "$BIN_URL" -o "$TMP"
-  elif command -v wget >/dev/null; then wget -q "$BIN_URL" -O "$TMP"
-  else err "curl or wget required for --bin-url"; exit 1; fi
-  SRC="$TMP"
-else
-  # Look for local builds
-  CANDIDATES=(
-    "build/Release/Glance.exe"
-    "build/Glance.exe"
-    "out/build/windows-x64-release/Glance.exe"
-    "./Glance.exe"
-    "$(dirname "$0")/build/Release/Glance.exe"
-  )
-  for c in "${CANDIDATES[@]}"; do
-    if [[ -f "$c" ]]; then SRC="$c"; break; fi
+main() {
+  local uninstall=0 startup=1 src=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --uninstall) uninstall=1 ;;
+      --no-startup) startup=0 ;;
+      --exe) src="${2:?--exe needs a path}"; shift ;;
+      -h|--help) echo "usage: install.sh [--uninstall] [--no-startup] [--exe PATH]"; return 0 ;;
+      *) die "unknown option: $1 (see --help)" ;;
+    esac
+    shift
   done
 
-  if [[ -z "$SRC" ]]; then
-    # Try to build if cmake available
-    if command -v cmake >/dev/null 2>&1 && [[ -f "CMakeLists.txt" ]]; then
-      info "No binary found — building (tiny)..."
-      cmake -B build -DGLANCE_TINY=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
-      cmake --build build --config Release
-      SRC="build/Release/Glance.exe"
-      [[ -f "$SRC" ]] || SRC="build/Glance.exe"
+  local localappdata roaming
+  if command -v cygpath >/dev/null 2>&1; then                # Git Bash, MSYS2, Cygwin
+    win() { cygpath -w "$1"; }
+    localappdata=$(cygpath -u "${LOCALAPPDATA:?LOCALAPPDATA is not set}")
+    roaming=$(cygpath -u "${APPDATA:?APPDATA is not set}")
+  elif grep -qi microsoft /proc/version 2>/dev/null; then    # WSL
+    win() { wslpath -w "$1"; }
+    local l r
+    l=$(winenv LOCALAPPDATA); r=$(winenv APPDATA)
+    [ -n "$l" ] && [ -n "$r" ] || die "can't reach Windows from WSL (cmd.exe not found; is interop enabled?)"
+    localappdata=$(wslpath -u "$l")
+    roaming=$(wslpath -u "$r")
+  else
+    die "Glance is a Windows app: run this from Git Bash, MSYS2 or WSL on Windows."
+  fi
+
+  local dir="$localappdata/Programs/Glance"
+  local exe="$dir/Glance.exe" new="$dir/Glance.new.exe"
+
+  if [ "$uninstall" = 1 ]; then
+    say "Closing Glance"
+    stop_running "$exe"
+    wincmd reg.exe delete "$RUNKEY" /v Glance /f >/dev/null 2>&1 || true
+    rm -rf "$dir"
+    cleanup_legacy "$localappdata" "$roaming"
+    say "Glance is uninstalled."
+    return 0
+  fi
+
+  mkdir -p "$dir"
+  if [ -n "$src" ]; then
+    cp -f "$src" "$new"
+  else
+    say "Downloading the latest Glance.exe"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL --retry 2 --progress-bar -o "$new" "$URL" </dev/null || die "download failed: $URL"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$new" "$URL" </dev/null || die "download failed: $URL"
+    else
+      die "curl or wget is required"
     fi
   fi
+  [ "$(head -c 2 "$new" 2>/dev/null)" = "MZ" ] || { rm -f "$new"; die "that file is not a Windows program"; }
 
-  if [[ -z "$SRC" || ! -f "$SRC" ]]; then
-    # Try latest release via GitHub API
-    if command -v curl >/dev/null; then
-      info "Checking GitHub releases..."
-      API="https://api.github.com/repos/$REPO/releases/latest"
-      DL=$(curl -fsSL "$API" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*Glance\.exe"' | head -1 | cut -d'"' -f4 || true)
-      if [[ -n "$DL" ]]; then
-        TMP="/tmp/Glance.exe"
-        info "Downloading release: $DL"
-        curl -fsSL "$DL" -o "$TMP"
-        SRC="$TMP"
-      fi
-    fi
+  stop_running "$new"   # the new build understands --quit and also closes older ones
+  mv -f "$new" "$exe"
+  if [ "$startup" = 1 ]; then "$exe" --startup=on </dev/null; else "$exe" --startup=off </dev/null; fi
+  cleanup_legacy "$localappdata" "$roaming"
+  launch "$exe"
+
+  say "Glance is running. Installed to $(win "$exe")"
+  if [ "$startup" = 1 ]; then say "It starts when you sign in (toggle that in its right-click menu)."; fi
+  say "Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/master/install.sh | bash -s -- --uninstall"
+}
+
+# Close a running bar politely so Windows gives its screen edge back, then make sure it is gone.
+stop_running() {
+  if [ -f "$1" ]; then "$1" --quit </dev/null >/dev/null 2>&1 || true; fi
+  wincmd taskkill.exe /IM Glance.exe /F >/dev/null 2>&1 || true
+}
+
+# Start Glance detached from this terminal.
+launch() {
+  local w q="'"
+  w=$(win "$1")
+  w=${w//$q/$q$q}   # PowerShell single-quote escaping
+  if command -v powershell.exe >/dev/null 2>&1; then
+    (cd "$(dirname "$1")" && powershell.exe -NoProfile -NonInteractive -Command "Start-Process -FilePath '$w'" </dev/null >/dev/null 2>&1) && return
   fi
-fi
+  ("$1" </dev/null >/dev/null 2>&1 &)
+}
 
-if [[ -z "$SRC" || ! -f "$SRC" ]]; then
-  err "No Glance.exe found. Build first:"
-  err "  cmake -B build -DGLANCE_TINY=ON && cmake --build build --config Release"
-  err "  bash install.sh"
-  exit 1
-fi
+# Files left by earlier, broken versions of this installer.
+cleanup_legacy() {
+  rm -f "$2/Microsoft/Windows/Start Menu/Programs/Startup/Glance.lnk" "$1/Glance/Glance.exe"
+  rmdir "$1/Glance" 2>/dev/null || true
+}
 
-# Install
-mkdir -p "$INSTALL_DIR"
-DEST="$INSTALL_DIR/Glance.exe"
-
-# Kill running
-if command -v taskkill.exe >/dev/null 2>&1; then taskkill.exe //F //IM Glance.exe 2>/dev/null || true; fi
-sleep 0.3 2>/dev/null || true
-
-info "Installing $SRC → $DEST"
-cp -f "$SRC" "$DEST"
-chmod +x "$DEST" 2>/dev/null || true
-
-# Autostart shortcut (Windows only)
-if [[ $PORTABLE -eq 0 && $NO_STARTUP -eq 0 ]]; then
-  STARTUP="$(powershell.exe -NoProfile -Command "[Environment]::GetFolderPath('Startup')" 2>/dev/null | tr -d '\r' || echo "")"
-  if [[ -n "$STARTUP" ]]; then
-    # Create .lnk via PowerShell
-    powershell.exe -NoProfile -Command "\$s=(New-Object -COM WScript.Shell).CreateShortcut('$STARTUP\\Glance.lnk'); \$s.TargetPath='$DEST'; \$s.WorkingDirectory='$INSTALL_DIR'; \$s.Description='Glance — lightweight monitor'; \$s.Save()" >/dev/null 2>&1 || true
-    info "Autostart: $STARTUP\\Glance.lnk"
-  fi
-fi
-
-# Run
-info "Starting Glance..."
-if command -v powershell.exe >/dev/null 2>&1; then
-  powershell.exe -NoProfile -Command "Start-Process '$DEST'" >/dev/null 2>&1 &
-else
-  "$DEST" &
-fi
-
-info "Done — tray icon should appear. Right-click → Exit."
-echo ""
-echo "  Uninstall: bash uninstall.sh   or   powershell -File scripts/uninstall.ps1"
+main "$@"

@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch llvm-mingw
+        shell: bash
+        run: |
+          v=20261104
+          curl -fsSL -o "$RUNNER_TEMP/tc.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/$v/llvm-mingw-$v-ucrt-x86_64.zip"
+          7z x -y -o"$RUNNER_TEMP" "$RUNNER_TEMP/tc.zip" > /dev/null
+          echo "$RUNNER_TEMP\\llvm-mingw-$v-ucrt-x86_64\\bin" >> "$GITHUB_PATH"
+
+      - name: Build release binary (llvm-mingw)
+        shell: bash
+        run: bash build.sh
+
+      - name: Build with MSVC (compile check)
+        shell: pwsh
+        run: |
+          cmake -S . -B build-msvc
+          cmake --build build-msvc --config Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glance
+          path: build/Glance.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/Glance.exe --title "Glance $GITHUB_REF_NAME" --generate-notes
