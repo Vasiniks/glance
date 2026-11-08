@@ -1,16 +1,12 @@
 # Contributing to Glance
 
-Keep it **lightweight**. Any PR that adds a heavy dependency will be rejected.
+Keep it **lightweight**. PRs adding heavy deps will be rejected.
 
-Allowed:
-- GDI, USER32, PDH, SHELL32 — already linked
-- < 100 LOC helper, no extra lib
+Allowed: GDI, USER32, PDH, SHELL32 — already linked, <100 LOC helper.
 
-Not allowed:
-- D2D/DWrite, WIC, COM, third_party SDKs, external fonts, JSON lib, etc
-- Registry schema migration — config is flat INI
+Not allowed: D2D/DWrite, WIC, COM, third_party SDKs, external fonts, JSON libs.
 
-Build before PR:
+Build:
 ```
 cmake -B build
 cmake --build build --config Release
